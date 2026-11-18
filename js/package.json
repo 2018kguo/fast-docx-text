@@ -1,0 +1,48 @@
+{
+  "name": "@2018kguo/fast-docx-text",
+  "version": "0.1.0",
+  "description": "Fast DOCX to plain text in Rust/WebAssembly. A byte-identical drop-in for mammoth's extractRawText.",
+  "license": "MIT AND BSD-2-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/2018kguo/fast-docx-text.git",
+    "directory": "js"
+  },
+  "keywords": [
+    "docx",
+    "word",
+    "text",
+    "extract",
+    "mammoth",
+    "webassembly",
+    "wasm"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "NOTICE",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p . && mkdir -p dist/wasm && cp wasm/fast_docx_text.wasm.js wasm/fast_docx_text.wasm.d.ts dist/wasm/",
+    "prepack": "npm run build && cp ../NOTICE ../LICENSE ../README.md .",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.21",
+    "fflate": "0.8.2",
+    "mammoth": "1.13.0",
+    "typescript": "5.9.3"
+  }
+}

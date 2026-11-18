@@ -1,0 +1,18 @@
+[package]
+name = "fast-docx-text"
+version = "0.1.0"
+edition = "2024"
+license = "MIT AND BSD-2-Clause"
+repository = "https://github.com/2018kguo/fast-docx-text"
+description = "Plain text from .docx files, byte-identical to mammoth's extractRawText."
+keywords = ["docx", "word", "text-extraction", "mammoth", "wasm"]
+categories = ["parser-implementations", "text-processing"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+memchr = "2.8.3"
+miniz_oxide = { version = "0.9.1", default-features = false, features = [
+  "with-alloc",
+] }

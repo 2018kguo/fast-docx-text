@@ -1,0 +1,25 @@
+# Coverage-guided fuzzing of the zip and XML layers with cargo-fuzz (nightly):
+#   cargo install cargo-fuzz
+#   cargo +nightly fuzz run extract -- -max_total_time=300
+# Any panic or out-of-bounds is a bug; every input must give Ok or Err.
+[package]
+name = "fast-docx-text-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+fast-docx-text = { path = "../crates/fast-docx-text" }
+
+[[bin]]
+name = "extract"
+path = "fuzz_targets/extract.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

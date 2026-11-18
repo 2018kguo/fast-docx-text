@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (build, test and pack only, no publish)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  # npm trusted publishing: GitHub's OIDC token replaces an NPM_TOKEN secret.
+  id-token: write
+
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm ci --no-audit --no-fund
+      - name: The committed WebAssembly is this build, byte for byte
+        run: |
+          node scripts/stamp.mjs --check
+          bash scripts/build-wasm.sh
+          git diff --exit-code -- js/wasm
+      - name: Build and test
+        working-directory: js
+        run: |
+          npm run build
+          npm test
+          cp ../NOTICE ../LICENSE ../README.md .
+      - name: Pack
+        if: inputs.dry_run
+        working-directory: js
+        run: npm pack --ignore-scripts --dry-run
+      - name: Publish @2018kguo/fast-docx-text
+        if: ${{ !inputs.dry_run }}
+        working-directory: js
+        run: npm publish --ignore-scripts --provenance --access public

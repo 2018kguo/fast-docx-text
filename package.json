@@ -1,0 +1,15 @@
+{
+  "name": "fast-docx-text-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "js"
+  ],
+  "scripts": {
+    "build": "npm run build -w js",
+    "test": "cargo test && npm test -w js",
+    "corpus": "node conformance/fetch-corpus.mjs",
+    "conformance": "node conformance/corpus.mjs && node conformance/differential.mjs",
+    "bench": "node bench/bench.mjs"
+  }
+}

@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a new mammoth release that changes output shows up without a push.
+    - cron: "17 6 * * 1"
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  stamp:
+    name: The WebAssembly matches its sources
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node scripts/stamp.mjs --check
+
+  test:
+    name: Rebuild, test and conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --no-audit --no-fund
+      - name: The committed WebAssembly is this build, byte for byte
+        run: |
+          bash scripts/build-wasm.sh
+          git diff --exit-code -- js/wasm
+      - name: Rust tests, with a longer mutation fuzz
+        run: MUTATIONS=200000 cargo test --release --workspace --locked
+      - name: Package tests
+        working-directory: js
+        run: |
+          npm run build
+          npm test
+      - name: The public corpus
+        run: |
+          node conformance/fetch-corpus.mjs
+          node conformance/corpus.mjs
+      - name: Generated documents
+        run: node conformance/differential.mjs --cases 2000
+      - name: Against the latest mammoth
+        run: |
+          mkdir -p "$RUNNER_TEMP/latest"
+          npm install --prefix "$RUNNER_TEMP/latest" --no-audit --no-fund mammoth@latest
+          node conformance/corpus.mjs --mammoth "$RUNNER_TEMP/latest"
+          node conformance/differential.mjs --cases 2000 --seed 100001 --mammoth "$RUNNER_TEMP/latest"
+      - name: The package as npm would install it
+        working-directory: js
+        run: |
+          cp ../NOTICE ../LICENSE ../README.md .
+          npm pack --ignore-scripts
+          mkdir -p "$RUNNER_TEMP/install" && cd "$RUNNER_TEMP/install"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund "$GITHUB_WORKSPACE"/js/*.tgz
+          cp "$GITHUB_WORKSPACE/node_modules/mammoth/test/test-data/single-paragraph.docx" .
+          node --input-type=module -e '
+            import { extractRawTextSync } from "@2018kguo/fast-docx-text";
+            import { readFileSync } from "node:fs";
+            const { value } = extractRawTextSync({ buffer: readFileSync("single-paragraph.docx") });
+            if (value !== "Walking on imported air\n\n") throw new Error(JSON.stringify(value));
+            console.log("the installed package reads", JSON.stringify(value));
+          '
+
+  fuzz:
+    name: Coverage-guided fuzzing (5 minutes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo +nightly fuzz run extract -- -max_total_time=300 -rss_limit_mb=2048
