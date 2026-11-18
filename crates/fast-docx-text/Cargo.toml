@@ -13,6 +13,4 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 memchr = "2.8.3"
-miniz_oxide = { version = "0.9.1", default-features = false, features = [
-  "with-alloc",
-] }
+zlib-rs = { version = "0.6.8", default-features = false, features = ["rust-allocator"] }

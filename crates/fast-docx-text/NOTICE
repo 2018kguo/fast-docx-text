@@ -35,5 +35,5 @@ JSZip (https://github.com/Stuk/jszip) is dual-licensed MIT or GPLv3 and
 @xmldom/xmldom (https://github.com/xmldom/xmldom) is MIT-licensed; no code from
 either is included, only behaviour reproduced.
 
-The Rust crate depends on miniz_oxide (MIT OR Zlib OR Apache-2.0) and memchr
+The Rust crate depends on zlib-rs (Zlib) and memchr
 (Unlicense OR MIT), compiled into the WebAssembly.

@@ -9,8 +9,7 @@
 
 use std::collections::HashMap;
 
-use miniz_oxide::inflate::TINFLStatus;
-use miniz_oxide::inflate::core::{DecompressorOxide, decompress, inflate_flags};
+use zlib_rs::{InflateConfig, ReturnCode};
 
 /// The most a single part may inflate to. A 2,200-page document.xml is about 19 MB.
 pub const MAX_PART_BYTES: usize = 128 * 1024 * 1024;
@@ -116,16 +115,15 @@ impl Entry<'_> {
 /// produce more than declared stops there and fails the length check.
 fn inflate(data: &[u8], size: usize) -> Result<Vec<u8>, Error> {
     let mut out = vec![0u8; size + 1];
-    let mut decompressor = DecompressorOxide::new();
-    let flags = inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
-    let (status, _, written) = decompress(&mut decompressor, data, &mut out, 0, flags);
-    match status {
-        TINFLStatus::Done => {}
+    // Negative window bits: raw DEFLATE, no zlib header.
+    let config = InflateConfig { window_bits: -15 };
+    let (written, code) = zlib_rs::decompress_slice(&mut out, data, config);
+    let written = written.len();
+    match code {
+        ReturnCode::Ok => {}
         // More output than declared: the length check reports it.
-        TINFLStatus::HasMoreOutput => {}
-        TINFLStatus::NeedsMoreInput | TINFLStatus::FailedCannotMakeProgress => {
-            return Err("invalid deflate data: unexpected end of stream".into());
-        }
+        ReturnCode::BufError => {}
+        // Truncated or malformed.
         _ => return Err("invalid deflate data".into()),
     }
     out.truncate(written);
