@@ -393,22 +393,23 @@ fn read_numbering(numbering: Option<&Part>, styles: Option<&Part>) -> Result<Num
 
 /// The parts [`extract`] finds through relationships, which need not be named .xml:
 /// the main document and its styles, numbering, notes and comments, resolved as
-/// `extract` resolves them. Relationship parts larger than `max_rels` are not read
-/// (the caller has already counted them).
-pub fn related_parts(package: &zip::Package, max_rels: u64) -> Vec<String> {
+/// `extract` resolves them. None when a relationship part it would read declares
+/// more than `max_rels` bytes, so the caller's parsing stays small.
+pub fn related_parts(package: &zip::Package, max_rels: u64) -> Option<Vec<String>> {
     let relationships = |path: &str| {
-        let small = package.file(path).is_some_and(|entry| entry.declared_size() <= max_rels);
-        let part = if small { read_part(package, path).ok().flatten() } else { None };
-        read_relationships(part.as_ref())
+        if package.file(path).is_some_and(|entry| entry.declared_size() > max_rels) {
+            return None;
+        }
+        Some(read_relationships(read_part(package, path).ok().flatten().as_ref()))
     };
     let main = find_part_path(
         package,
-        &relationships("_rels/.rels"),
+        &relationships("_rels/.rels")?,
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument",
         "",
         "word/document.xml",
     );
-    let document_relationships = relationships(&relationships_path(&main));
+    let document_relationships = relationships(&relationships_path(&main))?;
     let (main_dir, _) = split_path(&main);
     let mut parts: Vec<String> = ["styles", "numbering", "footnotes", "endnotes", "comments"]
         .iter()
@@ -423,7 +424,7 @@ pub fn related_parts(package: &zip::Package, max_rels: u64) -> Vec<String> {
         })
         .collect();
     parts.push(main);
-    parts
+    Some(parts)
 }
 
 pub fn extract(data: &[u8]) -> Result<String, String> {

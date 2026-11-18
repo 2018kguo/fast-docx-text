@@ -78,6 +78,16 @@ test("declaredXmlBytes counts a main part not named .xml", async () => {
   const want = await mammoth.extractRawText({ buffer: Buffer.from(bytes) });
   assert.equal(extractRawTextSync({ buffer: bytes }).value, want.value);
   assert.ok(declaredXmlBytes(bytes) >= document.length);
+
+  // Relationship parts past 16 KiB are not parsed by the size probe: every part
+  // counts instead.
+  const padded = zipSync({
+    "_rels/.rels": strToU8(
+      `<?xml version="1.0"?><!--${" ".repeat(20_000)}--><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.dat"/></Relationships>`
+    ),
+    "word/document.dat": document,
+  });
+  assert.ok(declaredXmlBytes(padded) >= document.length + 20_000);
 });
 
 test("a part never inflates past its declared size", async () => {

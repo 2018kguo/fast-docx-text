@@ -39,8 +39,14 @@ pub fn declared_xml_bytes(data: &[u8]) -> u64 {
         .iter()
         .filter(|entry| !entry.dir && named_xml(&entry.name))
         .fold(0u64, |sum, entry| sum.saturating_add(entry.declared_size()));
-    // Relationship parts over 1 MiB are not read here: they are already counted.
-    let mut related = raw_text::related_parts(&package, 1 << 20);
+    // Relationships are parsed only from parts of at most 16 KiB, so this stays cheap
+    // on the caller's thread; past that, every part counts.
+    let Some(mut related) = raw_text::related_parts(&package, 16 * 1024) else {
+        return package
+            .entries
+            .iter()
+            .fold(0u64, |sum, entry| sum.saturating_add(entry.declared_size()));
+    };
     related.retain(|path| !named_xml(path));
     related.sort();
     related.dedup();
