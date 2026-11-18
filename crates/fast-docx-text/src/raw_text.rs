@@ -501,11 +501,41 @@ pub fn extract(data: &[u8]) -> Result<String, String> {
         .first(root, "w:body")
         .ok_or("Could not find the body element: are you sure this is a docx file?")?;
     let read = Body::new(&tree, &relationships, &numbering).read_all(tree.kids(body))?;
-    let mut out = String::new();
+    // Sized first, so a long text is never copied into a doubled buffer.
+    let len = read
+        .value
+        .iter()
+        .map(|element| text_len(&tree, element))
+        .sum();
+    let mut out = String::with_capacity(len);
     for element in &read.value {
         write_text(&tree, element, &mut out);
     }
+    debug_assert_eq!(out.len(), len);
     Ok(out)
+}
+
+/// The byte length [`write_text`] writes.
+fn text_len(tree: &Tree, element: &El) -> usize {
+    let children = |children: &[El]| {
+        children
+            .iter()
+            .map(|child| text_len(tree, child))
+            .sum::<usize>()
+    };
+    match element {
+        El::Text(start, end) => tree.str((*start, *end)).len(),
+        El::Str(text) => text.len(),
+        El::Tab => 1,
+        El::Paragraph(items) => children(items) + 2,
+        El::Group(items)
+        | El::Table(items)
+        | El::Row(items)
+        | El::Cell {
+            children: items, ..
+        } => children(items),
+        El::Leaf => 0,
+    }
 }
 
 fn write_text(tree: &Tree, element: &El, out: &mut String) {

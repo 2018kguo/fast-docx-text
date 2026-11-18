@@ -200,17 +200,39 @@ pub fn decode(bytes: Vec<u8>) -> String {
     unsafe { String::from_utf8_unchecked(bytes) }
 }
 
-/// `lastIndexOf('</name>')` for every name, from one backward scan shared by all of
-/// them: each lookup resumes the scan where the last one stopped, remembering every
-/// end tag it passes, so the whole source is read at most once.
+/// xmldom's `lastIndexOf('</name>')` and `lastIndexOf('</name')` for every name. The
+/// first comes from one backward scan shared by all names: each lookup resumes it
+/// where the last stopped, remembering every end tag it passes. The second, needed
+/// only for end tags like `</name >` (or none), from an index of everything that
+/// follows a `</`, built once. Either way the source is read a bounded number of times.
 struct EndTags<'a> {
     bytes: &'a [u8],
     /// Every `</` at or past this offset has been seen.
     scanned_to: usize,
     last: FxMap<&'a [u8], usize>,
+    prefixes: Option<Prefixes<'a>>,
+}
+
+/// What follows each `</`, up to the next `<` or `>` (a name contains neither, so
+/// `</name` occurs there exactly when this starts with `name`), sorted and deduplicated
+/// so the ones starting with a name are a run, with a max-tree over their last offsets.
+struct Prefixes<'a> {
+    keys: Vec<&'a [u8]>,
+    /// Leaves at `keys.len()..`; each inner node the larger of its two children.
+    max: Vec<u32>,
 }
 
 impl<'a> EndTags<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        EndTags {
+            bytes,
+            scanned_to: bytes.len(),
+            last: FxMap::default(),
+            prefixes: None,
+        }
+    }
+
+    /// `lastIndexOf('</name>')`.
     fn last(&mut self, name: &[u8]) -> Option<usize> {
         if let Some(&at) = self.last.get(name) {
             return Some(at);
@@ -230,7 +252,65 @@ impl<'a> EndTags<'a> {
                 }
             }
         }
+        // Nothing before here, so later lookups need not search it again.
+        self.scanned_to = 0;
         None
+    }
+
+    /// `lastIndexOf('</' + name)`.
+    fn last_prefixed(&mut self, name: &[u8]) -> Option<usize> {
+        let bytes = self.bytes;
+        let Prefixes { keys, max } = self.prefixes.get_or_insert_with(|| {
+            let mut entries: Vec<(&[u8], u32)> = memchr::memmem::find_iter(bytes, b"</")
+                .map(|at| {
+                    let rest = &bytes[at + 2..];
+                    let len = memchr::memchr2(b'<', b'>', rest).unwrap_or(rest.len());
+                    (&rest[..len], at as u32)
+                })
+                .collect();
+            entries.sort_unstable();
+            // Sorted by offset within a key, so the last of each run is its last offset.
+            entries.dedup_by(|later, earlier| {
+                let same = later.0 == earlier.0;
+                if same {
+                    earlier.1 = later.1;
+                }
+                same
+            });
+            let n = entries.len();
+            let mut max = vec![0u32; 2 * n];
+            for (i, &(_, at)) in entries.iter().enumerate() {
+                max[n + i] = at;
+            }
+            for i in (1..n).rev() {
+                max[i] = max[2 * i].max(max[2 * i + 1]);
+            }
+            Prefixes {
+                keys: entries.into_iter().map(|(key, _)| key).collect(),
+                max,
+            }
+        });
+        let start = keys.partition_point(|key| *key < name);
+        let end = start + keys[start..].partition_point(|key| key.starts_with(name));
+        if start == end {
+            return None;
+        }
+        // The largest leaf in [start, end), bottom-up.
+        let n = keys.len();
+        let (mut lo, mut hi, mut best) = (start + n, end + n, 0);
+        while lo < hi {
+            if lo & 1 == 1 {
+                best = best.max(max[lo]);
+                lo += 1;
+            }
+            if hi & 1 == 1 {
+                hi -= 1;
+                best = best.max(max[hi]);
+            }
+            lo /= 2;
+            hi /= 2;
+        }
+        Some(best as usize)
     }
 }
 
@@ -307,11 +387,7 @@ pub fn parse(source: String, known: &[&str]) -> Result<Tree, String> {
     // Per open element: (raw tag name, scope length before it).
     let mut open: Vec<(&str, usize)> = Vec::new();
     let mut element_names: FxMap<&str, ElementName> = FxMap::default();
-    let mut end_tags = EndTags {
-        bytes,
-        scanned_to: bytes.len(),
-        last: FxMap::default(),
-    };
+    let mut end_tags = EndTags::new(bytes);
     // Raw attribute name → (converted id, scope generation).
     let mut attribute_names: FxMap<&str, (u32, u32)> = FxMap::default();
     let mut start = 0;
@@ -508,7 +584,8 @@ pub fn parse(source: String, known: &[&str]) -> Result<Tree, String> {
                             .last(tag_name.as_bytes())
                             .map_or(-1, |at| at as i64);
                         if full < tag_end as i64 {
-                            memchr::memmem::rfind(bytes, format!("</{tag_name}").as_bytes())
+                            end_tags
+                                .last_prefixed(tag_name.as_bytes())
                                 .map_or(-1, |at| at as i64)
                         } else {
                             full
@@ -739,14 +816,16 @@ mod tests {
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
             let bytes = text.as_bytes();
-            let mut end_tags = EndTags {
-                bytes,
-                scanned_to: bytes.len(),
-                last: FxMap::default(),
-            };
+            let mut end_tags = EndTags::new(bytes);
             for name in ["b", "a", "a:b", "ab", ""] {
                 let expected = memchr::memmem::rfind(bytes, format!("</{name}>").as_bytes());
                 assert_eq!(end_tags.last(name.as_bytes()), expected, "{text:?} {name}");
+                let expected = memchr::memmem::rfind(bytes, format!("</{name}").as_bytes());
+                assert_eq!(
+                    end_tags.last_prefixed(name.as_bytes()),
+                    expected,
+                    "{text:?} {name}"
+                );
             }
         }
     }
