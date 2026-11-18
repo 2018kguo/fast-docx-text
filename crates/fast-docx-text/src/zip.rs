@@ -145,7 +145,6 @@ impl<'a> Package<'a> {
             .map(|&index| &self.entries[index])
             .filter(|entry| !entry.dir)
     }
-
 }
 
 /// JSZip's `utils.resolve`: drops `.` and inner empty segments, and `..` pops one.
@@ -236,7 +235,9 @@ pub fn open(data: &[u8]) -> Result<Package<'_>, Error> {
 
     let mut expected_end = directory_offset.saturating_add(directory_size);
     if zip64 {
-        expected_end = expected_end.saturating_add(32).saturating_add(zip64_end_size);
+        expected_end = expected_end
+            .saturating_add(32)
+            .saturating_add(zip64_end_size);
     }
     let end_offset = end_offset as u64;
     if end_offset > expected_end {
@@ -346,8 +347,8 @@ pub fn open(data: &[u8]) -> Result<Package<'_>, Error> {
                 String::from_utf8_lossy(local_name)
             ));
         }
-        let data = reader
-            .read(usize::try_from(file.compressed_size).map_err(|_| "Corrupted zip")?)?;
+        let data =
+            reader.read(usize::try_from(file.compressed_size).map_err(|_| "Corrupted zip")?)?;
         let utf8 = file.flag & 0x0800 != 0;
         let name = if utf8 {
             String::from_utf8_lossy(local_name).into_owned()

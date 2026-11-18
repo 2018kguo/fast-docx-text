@@ -85,9 +85,9 @@ fn char_reference(digits: &str, out: &mut String) {
     let code = if valid.is_empty() {
         0.0 // NaN, which fromCharCode reads as 0
     } else {
-        valid
-            .chars()
-            .fold(0f64, |acc, c| acc * f64::from(radix) + f64::from(c.to_digit(radix).unwrap()))
+        valid.chars().fold(0f64, |acc, c| {
+            acc * f64::from(radix) + f64::from(c.to_digit(radix).unwrap())
+        })
     };
     let units: Vec<u16> = if code > 65535.0 {
         // (code - 0x10000) >> 10 and & 0x3ff, as int32.
@@ -127,7 +127,8 @@ fn decode_entities(raw: &str, out: &mut String) -> Result<(), String> {
             cursor += 1;
         }
         let word_start = cursor;
-        while cursor < bytes.len() && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+        while cursor < bytes.len()
+            && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
         {
             cursor += 1;
         }
@@ -332,7 +333,9 @@ pub fn parse(source: String, known: &[&str]) -> Result<Tree, String> {
                 };
                 let raw = &source[tag_start + 2..end];
                 let name = raw.trim_end_matches([' ', '\t', '\n', '\r']);
-                if name.bytes().any(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+                if name
+                    .bytes()
+                    .any(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
                     || (!name.is_ascii() && name.contains(char::is_whitespace))
                 {
                     return Err(format!("end tag name: {name} is malformed"));
@@ -501,7 +504,9 @@ pub fn parse(source: String, known: &[&str]) -> Result<Tree, String> {
                     // before the element's end; an element whose end is past it has no
                     // end tag after it.
                     let position = *entry.close.get_or_insert_with(|| {
-                        let full = end_tags.last(tag_name.as_bytes()).map_or(-1, |at| at as i64);
+                        let full = end_tags
+                            .last(tag_name.as_bytes())
+                            .map_or(-1, |at| at as i64);
                         if full < tag_end as i64 {
                             memchr::memmem::rfind(bytes, format!("</{tag_name}").as_bytes())
                                 .map_or(-1, |at| at as i64)
@@ -558,7 +563,9 @@ pub fn parse(source: String, known: &[&str]) -> Result<Tree, String> {
                     scope.truncate(scope_len);
                 } else {
                     if open.len() >= MAX_DEPTH {
-                        return Err(format!("XML nesting exceeds the {MAX_DEPTH}-level depth cap"));
+                        return Err(format!(
+                            "XML nesting exceeds the {MAX_DEPTH}-level depth cap"
+                        ));
                     }
                     open.push((tag_name, scope_len));
                 }
@@ -624,7 +631,10 @@ fn doctype_end(b: &[u8], tag_start: usize) -> Result<Option<usize>, String> {
         first.get_or_insert((p, token_end));
         p = token_end;
     }
-    Err("element parse error: TypeError: Cannot read properties of undefined (reading 'length')".into())
+    Err(
+        "element parse error: TypeError: Cannot read properties of undefined (reading 'length')"
+            .into(),
+    )
 }
 
 fn doctype(b: &[u8], first: Option<(usize, usize)>, tokens: usize, end: usize) -> Option<usize> {
@@ -720,12 +730,20 @@ mod tests {
         for _ in 0..20_000 {
             let mut text = String::new();
             for _ in 0..(seed % 13) {
-                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 text.push_str(pieces[(seed >> 33) as usize % pieces.len()]);
             }
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             let bytes = text.as_bytes();
-            let mut end_tags = EndTags { bytes, scanned_to: bytes.len(), last: FxMap::default() };
+            let mut end_tags = EndTags {
+                bytes,
+                scanned_to: bytes.len(),
+                last: FxMap::default(),
+            };
             for name in ["b", "a", "a:b", "ab", ""] {
                 let expected = memchr::memmem::rfind(bytes, format!("</{name}>").as_bytes());
                 assert_eq!(end_tags.last(name.as_bytes()), expected, "{text:?} {name}");
@@ -735,16 +753,26 @@ mod tests {
 
     #[test]
     fn decode_normalizes_line_breaks_like_xmldom() {
-        let pieces = ["\r", "\n", "\u{85}", "\u{2028}", "\u{2029}", "\u{c2}", "\u{20ac}", "a"];
+        let pieces = [
+            "\r", "\n", "\u{85}", "\u{2028}", "\u{2029}", "\u{c2}", "\u{20ac}", "a",
+        ];
         let mut seed = 1u64;
         for _ in 0..20_000 {
             let mut text = String::new();
             for _ in 0..(seed % 9) {
-                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 text.push_str(pieces[(seed >> 33) as usize % pieces.len()]);
             }
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            assert_eq!(super::decode(text.clone().into_bytes()), reference(&text), "{text:?}");
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            assert_eq!(
+                super::decode(text.clone().into_bytes()),
+                reference(&text),
+                "{text:?}"
+            );
         }
     }
 }

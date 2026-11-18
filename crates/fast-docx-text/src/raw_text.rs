@@ -307,7 +307,10 @@ fn find_part_path(
         .flatten()
         .map(|target| {
             let joined = join_path(&[base, target.as_deref().unwrap_or("")]);
-            joined.strip_prefix('/').map(str::to_owned).unwrap_or(joined)
+            joined
+                .strip_prefix('/')
+                .map(str::to_owned)
+                .unwrap_or(joined)
         })
         .find(|target| package.file(target).is_some())
         .unwrap_or_else(|| fallback.to_owned())
@@ -326,17 +329,17 @@ fn read_numbering(numbering: Option<&Part>, styles: Option<&Part>) -> Result<Num
     let mut result = Numbering::default();
     if let Some(Part { tree, root }) = styles {
         for &style in tree.kids(*root) {
-            if tree.name(style) != Some("w:style") || tree.attr(style, "w:type") != Some("numbering")
+            if tree.name(style) != Some("w:style")
+                || tree.attr(style, "w:type") != Some("numbering")
             {
                 continue;
             }
             let style_id = key(tree.attr(style, "w:styleId"));
-            let num_id = key(
-                tree.first(style, "w:pPr")
-                    .and_then(|ppr| tree.first(ppr, "w:numPr"))
-                    .and_then(|numpr| tree.first(numpr, "w:numId"))
-                    .and_then(|numid| tree.attr(numid, "w:val")),
-            );
+            let num_id = key(tree
+                .first(style, "w:pPr")
+                .and_then(|ppr| tree.first(ppr, "w:numPr"))
+                .and_then(|numpr| tree.first(numpr, "w:numId"))
+                .and_then(|numid| tree.attr(numid, "w:val")));
             result.numbering_styles.entry(style_id).or_insert(num_id);
         }
     }
@@ -376,9 +379,9 @@ fn read_numbering(numbering: Option<&Part>, styles: Option<&Part>) -> Result<Num
                         .insert(key(tree.attr(child, "w:abstractNumId")), link);
                 }
                 Some("w:num") => {
-                    let abstract_id = tree.first(child, "w:abstractNumId").ok_or(
-                        "Cannot read properties of undefined (reading 'attributes')",
-                    )?;
+                    let abstract_id = tree
+                        .first(child, "w:abstractNumId")
+                        .ok_or("Cannot read properties of undefined (reading 'attributes')")?;
                     result.nums.insert(
                         key(tree.attr(child, "w:numId")),
                         key(tree.attr(abstract_id, "w:val")),
@@ -397,10 +400,15 @@ fn read_numbering(numbering: Option<&Part>, styles: Option<&Part>) -> Result<Num
 /// more than `max_rels` bytes, so the caller's parsing stays small.
 pub fn related_parts(package: &zip::Package, max_rels: u64) -> Option<Vec<String>> {
     let relationships = |path: &str| {
-        if package.file(path).is_some_and(|entry| entry.declared_size() > max_rels) {
+        if package
+            .file(path)
+            .is_some_and(|entry| entry.declared_size() > max_rels)
+        {
             return None;
         }
-        Some(read_relationships(read_part(package, path).ok().flatten().as_ref()))
+        Some(read_relationships(
+            read_part(package, path).ok().flatten().as_ref(),
+        ))
     };
     let main = find_part_path(
         package,
@@ -417,7 +425,9 @@ pub fn related_parts(package: &zip::Package, max_rels: u64) -> Option<Vec<String
             find_part_path(
                 package,
                 &document_relationships,
-                &format!("http://schemas.openxmlformats.org/officeDocument/2006/relationships/{name}"),
+                &format!(
+                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/{name}"
+                ),
                 main_dir,
                 &format!("word/{name}.xml"),
             )
@@ -430,8 +440,7 @@ pub fn related_parts(package: &zip::Package, max_rels: u64) -> Option<Vec<String
 pub fn extract(data: &[u8]) -> Result<String, String> {
     let package = zip::open(data)?;
     read_part(&package, "[Content_Types].xml")?;
-    let package_relationships =
-        read_relationships(read_part(&package, "_rels/.rels")?.as_ref());
+    let package_relationships = read_relationships(read_part(&package, "_rels/.rels")?.as_ref());
     let main = find_part_path(
         &package,
         &package_relationships,
@@ -488,9 +497,9 @@ pub fn extract(data: &[u8]) -> Result<String, String> {
 
     let (relationships, part) = read_part_with_relationships(&package, &main)?;
     let Part { tree, root } = part.expect("the main part exists");
-    let body = tree.first(root, "w:body").ok_or(
-        "Could not find the body element: are you sure this is a docx file?",
-    )?;
+    let body = tree
+        .first(root, "w:body")
+        .ok_or("Could not find the body element: are you sure this is a docx file?")?;
     let read = Body::new(&tree, &relationships, &numbering).read_all(tree.kids(body))?;
     let mut out = String::new();
     for element in &read.value {
@@ -505,17 +514,22 @@ fn write_text(tree: &Tree, element: &El, out: &mut String) {
         El::Str(text) => out.push_str(text),
         El::Tab => out.push('\t'),
         El::Paragraph(children) => {
-            children.iter().for_each(|child| write_text(tree, child, out));
+            children
+                .iter()
+                .for_each(|child| write_text(tree, child, out));
             out.push_str("\n\n");
         }
         El::Group(children) | El::Table(children) | El::Row(children) => {
-            children.iter().for_each(|child| write_text(tree, child, out));
+            children
+                .iter()
+                .for_each(|child| write_text(tree, child, out));
         }
-        El::Cell { children, .. } => children.iter().for_each(|child| write_text(tree, child, out)),
+        El::Cell { children, .. } => children
+            .iter()
+            .for_each(|child| write_text(tree, child, out)),
         El::Leaf => {}
     }
 }
-
 
 /// mammoth's `BodyReader`: one per `readXmlElements` call, holding the open complex
 /// fields and the contents of paragraphs whose mark was deleted.
@@ -607,11 +621,14 @@ impl<'a> Body<'a> {
                 if name == W_HYPERLINK {
                     let relationship = tree.attr(node, "r:id");
                     let anchor = tree.attr(node, "w:anchor");
-                    if let (Some(id), Some(_)) =
-                        (relationship.filter(|id| !id.is_empty()), anchor.filter(|a| !a.is_empty()))
-                        && self.target(id).is_none()
+                    if let (Some(id), Some(_)) = (
+                        relationship.filter(|id| !id.is_empty()),
+                        anchor.filter(|a| !a.is_empty()),
+                    ) && self.target(id).is_none()
                     {
-                        return Err("Cannot read properties of undefined (reading 'indexOf')".into());
+                        return Err(
+                            "Cannot read properties of undefined (reading 'indexOf')".into()
+                        );
                     }
                 }
                 let Read { value, extra } = self.children(node)?;
@@ -732,7 +749,10 @@ impl<'a> Body<'a> {
     }
 
     fn target(&self, id: &str) -> Option<&'a str> {
-        self.relationships.by_id.get(id).and_then(|target| target.as_deref())
+        self.relationships
+            .by_id
+            .get(id)
+            .and_then(|target| target.as_deref())
     }
 
     /// `findEmbeddedImageFile` fails on a relationship with no target.
@@ -746,7 +766,13 @@ impl<'a> Body<'a> {
     fn drawing(&self, node: NodeId) -> Result<(), String> {
         let tree = self.tree;
         let mut level = vec![node];
-        for name in ["a:graphic", "a:graphicData", "pic:pic", "pic:blipFill", "a:blip"] {
+        for name in [
+            "a:graphic",
+            "a:graphicData",
+            "pic:pic",
+            "pic:blipFill",
+            "a:blip",
+        ] {
             level = level
                 .iter()
                 .flat_map(|&parent| {
@@ -797,11 +823,13 @@ impl<'a> Body<'a> {
             if code.is_nan() {
                 return None;
             }
-            let key = format!("{}_{}", font.to_uppercase(), js_number_string(code));
-            DINGBATS
-                .binary_search_by(|(entry, _)| (*entry).cmp(key.as_str()))
-                .ok()
-                .and_then(|index| char::from_u32(DINGBATS[index].1))
+            // dingbats[TYPEFACE][code]: the table's keys are the integers 0-255.
+            let typeface = font.to_uppercase();
+            let (_, codes) = DINGBATS.iter().find(|(name, _)| *name == typeface)?;
+            (code >= 0.0 && code < 256.0 && code.fract() == 0.0)
+                .then(|| codes[code as usize])
+                .filter(|&unicode| unicode != 0)
+                .and_then(char::from_u32)
                 .map(String::from)
         };
         Ok(lookup(char_code).or_else(|| {
@@ -823,7 +851,10 @@ fn replace_first_text(element: &mut El, replaced: &mut bool) {
             *replaced = true;
             *element = El::Leaf;
         }
-        El::Paragraph(children) | El::Group(children) | El::Table(children) | El::Row(children)
+        El::Paragraph(children)
+        | El::Group(children)
+        | El::Table(children)
+        | El::Row(children)
         | El::Cell { children, .. } => {
             for child in children {
                 replace_first_text(child, replaced);
@@ -886,7 +917,9 @@ fn js_parse_int_radix(value: &str, radix: u32) -> f64 {
         _ => (false, trimmed),
     };
     let rest = if radix == 16 {
-        rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")).unwrap_or(rest)
+        rest.strip_prefix("0x")
+            .or_else(|| rest.strip_prefix("0X"))
+            .unwrap_or(rest)
     } else {
         rest
     };
@@ -894,19 +927,8 @@ fn js_parse_int_radix(value: &str, radix: u32) -> f64 {
     if digits.is_empty() {
         return f64::NAN;
     }
-    let value = digits
-        .iter()
-        .fold(0f64, |acc, &digit| acc * f64::from(radix) + f64::from(digit));
+    let value = digits.iter().fold(0f64, |acc, &digit| {
+        acc * f64::from(radix) + f64::from(digit)
+    });
     if negative { -value } else { value }
-}
-
-/// A JavaScript number as a property key (integers only matter here).
-fn js_number_string(value: f64) -> String {
-    if value == 0.0 {
-        "0".into()
-    } else if value.fract() == 0.0 && value.abs() < 1e21 {
-        format!("{value:.0}")
-    } else {
-        format!("{value}")
-    }
 }

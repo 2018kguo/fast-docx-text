@@ -148,3 +148,21 @@ test("reads in a row, across an instance dropped for its size, match reads alone
   assert.throws(() => extractRawTextSync({ buffer: new Uint8Array(10) }), Error);
   assert.equal(extractRawTextSync({ buffer: small }).value, want);
 });
+
+test("every dingbat reads as mammoth reads it", async () => {
+  const fonts = ["Symbol", "Webdings", "Wingdings", "wingdings 2", "WINGDINGS 3", "Arial"];
+  const chars = [];
+  for (let code = 0; code < 256; code++) {
+    const hex = code.toString(16).toUpperCase().padStart(2, "0");
+    chars.push(hex, `F0${hex}`);
+  }
+  chars.push("", "-1", "100", "F100", "1e2", " 41", "0x41", "zz", "41.5");
+  const body = fonts
+    .map((font) =>
+      chars.map((char) => `<w:p><w:r><w:sym w:font="${font}" w:char="${char}"/></w:r></w:p>`).join("")
+    )
+    .join("");
+  const bytes = docx(body);
+  const want = await mammoth.extractRawText({ buffer: Buffer.from(bytes) });
+  assert.equal(extractRawTextSync({ buffer: bytes }).value, want.value);
+});

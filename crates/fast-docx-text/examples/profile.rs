@@ -5,7 +5,10 @@
 use std::time::Instant;
 
 fn main() {
-    let repeat: usize = std::env::var("REPEAT").ok().and_then(|n| n.parse().ok()).unwrap_or(20);
+    let repeat: usize = std::env::var("REPEAT")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(20);
     let mut total = 0.0;
     for path in std::env::args().skip(1) {
         let data = std::fs::read(&path).expect("read");

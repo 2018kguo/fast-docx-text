@@ -9,8 +9,8 @@
 //! never past the size the archive declares for it, XML nests at most
 //! [`xmldom::MAX_DEPTH`] levels, and every failure is an `Err`, never a panic.
 
-pub mod raw_text;
 mod dingbats;
+pub mod raw_text;
 pub mod tree;
 pub mod xmldom;
 pub mod zip;
@@ -53,7 +53,9 @@ pub fn declared_xml_bytes(data: &[u8]) -> u64 {
     related
         .iter()
         .filter_map(|path| package.file(path))
-        .fold(declared, |sum, entry| sum.saturating_add(entry.declared_size()))
+        .fold(declared, |sum, entry| {
+            sum.saturating_add(entry.declared_size())
+        })
 }
 
 /// The WebAssembly interface, a plain C ABI with no imports: JavaScript copies the file

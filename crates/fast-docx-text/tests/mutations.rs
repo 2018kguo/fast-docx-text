@@ -27,7 +27,11 @@ fn crc32(bytes: &[u8]) -> u32 {
     for &byte in bytes {
         crc ^= u32::from(byte);
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
@@ -140,7 +144,10 @@ fn mutate(rng: &mut Rng, bytes: &mut Vec<u8>) {
 
 #[test]
 fn damaged_packages_never_panic() {
-    let cases: u64 = std::env::var("MUTATIONS").ok().and_then(|n| n.parse().ok()).unwrap_or(20_000);
+    let cases: u64 = std::env::var("MUTATIONS")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(20_000);
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let mut read = 0;
     for _ in 0..cases {
