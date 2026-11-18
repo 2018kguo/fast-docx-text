@@ -113,19 +113,12 @@ enum El {
     Leaf,
 }
 
+/// What reading elements produces: their values, and the elements that surface after
+/// the enclosing paragraph (a `w:pict`'s contents). Reads append to one.
 #[derive(Default)]
 struct Read {
     value: Vec<El>,
     extra: Vec<El>,
-}
-
-impl Read {
-    fn one(element: El) -> Read {
-        Read {
-            value: vec![element],
-            extra: Vec::new(),
-        }
-    }
 }
 
 struct Relationships {
@@ -546,12 +539,15 @@ impl<'a> Body<'a> {
 
     fn read_all(&mut self, nodes: &[NodeId]) -> Result<Read, String> {
         let mut read = Read::default();
-        for &node in nodes {
-            let mut one = self.read(node)?;
-            read.value.append(&mut one.value);
-            read.extra.append(&mut one.extra);
-        }
+        self.read_into(nodes, &mut read)?;
         Ok(read)
+    }
+
+    fn read_into(&mut self, nodes: &[NodeId], out: &mut Read) -> Result<(), String> {
+        for &node in nodes {
+            self.read(node, out)?;
+        }
+        Ok(())
     }
 
     fn children(&mut self, node: NodeId) -> Result<Read, String> {
@@ -578,12 +574,13 @@ impl<'a> Body<'a> {
         node.and_then(|node| self.tree.attr(node, name))
     }
 
-    fn read(&mut self, node: NodeId) -> Result<Read, String> {
+    /// Reads one node into `out`.
+    fn read(&mut self, node: NodeId, out: &mut Read) -> Result<(), String> {
         let tree = self.tree;
         let Some(name) = tree.name_id(node) else {
-            return Ok(Read::default());
+            return Ok(());
         };
-        Ok(match name {
+        match name {
             W_P => {
                 let properties = tree.first(node, "w:pPr");
                 let deleted = self
@@ -592,18 +589,18 @@ impl<'a> Body<'a> {
                 if deleted {
                     self.deleted_paragraph_contents
                         .extend_from_slice(tree.kids(node));
-                    return Ok(Read::default());
+                    return Ok(());
                 }
                 self.paragraph_properties(properties)?;
-                let mut nodes = std::mem::take(&mut self.deleted_paragraph_contents);
-                nodes.extend_from_slice(tree.kids(node));
-                let Read { value, mut extra } = self.read_all(&nodes)?;
-                let mut out = vec![El::Paragraph(value)];
-                out.append(&mut extra);
-                Read {
-                    value: out,
-                    extra: Vec::new(),
-                }
+                let read = if self.deleted_paragraph_contents.is_empty() {
+                    self.read_all(tree.kids(node))?
+                } else {
+                    let mut nodes = std::mem::take(&mut self.deleted_paragraph_contents);
+                    nodes.extend_from_slice(tree.kids(node));
+                    self.read_all(&nodes)?
+                };
+                out.value.push(El::Paragraph(read.value));
+                out.value.extend(read.extra);
             }
             W_R | W_HYPERLINK => {
                 if name == W_HYPERLINK {
@@ -617,51 +614,45 @@ impl<'a> Body<'a> {
                     }
                 }
                 let Read { value, extra } = self.children(node)?;
-                Read {
-                    value: vec![El::Group(value)],
-                    extra,
-                }
+                out.value.push(El::Group(value));
+                out.extra.extend(extra);
             }
             W_FLDCHAR => {
                 match tree.attr(node, "w:fldCharType") {
                     Some("begin") => self.open_fields += 1,
                     // An end or separator with no field open is ignored, with a warning.
                     Some("end" | "separate") if self.open_fields == 0 => {
-                        return Ok(Read::default());
+                        return Ok(());
                     }
                     Some("end") => self.open_fields -= 1,
                     _ => {}
                 }
-                Read::one(El::Leaf)
+                out.value.push(El::Leaf);
             }
             W_INSTRTEXT => {
                 self.text(node)?;
-                Read::default()
             }
-            W_T => Read::one(self.text(node)?),
-            W_TAB => Read::one(El::Tab),
-            W_NOBREAKHYPHEN => Read::one(El::Str("\u{2011}".into())),
-            W_SOFTHYPHEN => Read::one(El::Str("\u{00AD}".into())),
-            W_SYM => match self.symbol(node)? {
-                Some(text) => Read::one(El::Str(text.into())),
-                None => Read::default(),
-            },
+            W_T => out.value.push(self.text(node)?),
+            W_TAB => out.value.push(El::Tab),
+            W_NOBREAKHYPHEN => out.value.push(El::Str("\u{2011}".into())),
+            W_SOFTHYPHEN => out.value.push(El::Str("\u{00AD}".into())),
+            W_SYM => {
+                if let Some(text) = self.symbol(node)? {
+                    out.value.push(El::Str(text.into()));
+                }
+            }
             W_TBL => {
                 let Read { value, extra } = self.children(node)?;
-                Read {
-                    value: vec![El::Table(merge_row_spans(value))],
-                    extra,
-                }
+                out.value.push(El::Table(merge_row_spans(value)));
+                out.extra.extend(extra);
             }
             W_TR => {
                 if self.first(tree.first(node, "w:trPr"), "w:del").is_some() {
-                    return Ok(Read::default());
+                    return Ok(());
                 }
                 let Read { value, extra } = self.children(node)?;
-                Read {
-                    value: vec![El::Row(value)],
-                    extra,
-                }
+                out.value.push(El::Row(value));
+                out.extra.extend(extra);
             }
             W_TC => {
                 let Read { value, extra } = self.children(node)?;
@@ -677,29 +668,26 @@ impl<'a> Body<'a> {
                         _ => true,
                     }
                 });
-                Read {
-                    value: vec![El::Cell {
-                        children: value,
-                        col_span,
-                        v_merge,
-                    }],
-                    extra,
-                }
+                out.value.push(El::Cell {
+                    children: value,
+                    col_span,
+                    v_merge,
+                });
+                out.extra.extend(extra);
             }
             W_FOOTNOTEREFERENCE | W_ENDNOTEREFERENCE | W_COMMENTREFERENCE | W_BR => {
-                Read::one(El::Leaf)
+                out.value.push(El::Leaf);
             }
             W_BOOKMARKSTART => {
-                if tree.attr(node, "w:name") == Some("_GoBack") {
-                    Read::default()
-                } else {
-                    Read::one(El::Leaf)
+                if tree.attr(node, "w:name") != Some("_GoBack") {
+                    out.value.push(El::Leaf);
                 }
             }
-            MC_ALTERNATECONTENT => match tree.first(node, "mc:Fallback") {
-                Some(fallback) => self.children(fallback)?,
-                None => Read::default(),
-            },
+            MC_ALTERNATECONTENT => {
+                if let Some(fallback) = tree.first(node, "mc:Fallback") {
+                    self.read_into(tree.kids(fallback), out)?;
+                }
+            }
             W_SDT => {
                 let content = tree.first(node, "w:sdtContent");
                 let Read { mut value, extra } = match content {
@@ -716,31 +704,30 @@ impl<'a> Body<'a> {
                         value = vec![El::Leaf];
                     }
                 }
-                Read { value, extra }
+                out.value.extend(value);
+                out.extra.extend(extra);
             }
             W_INS | W_OBJECT | W_SMARTTAG | W_DRAWING | V_ROUNDRECT | V_SHAPE | V_TEXTBOX
-            | W_TXBXCONTENT | V_GROUP | V_RECT | W_CUSTOMXML | W_MOVETO => self.children(node)?,
+            | W_TXBXCONTENT | V_GROUP | V_RECT | W_CUSTOMXML | W_MOVETO => {
+                self.read_into(tree.kids(node), out)?;
+            }
             W_PICT => {
-                let Read { value, mut extra } = self.children(node)?;
-                extra.extend(value);
-                Read {
-                    value: Vec::new(),
-                    extra,
-                }
+                let Read { value, extra } = self.children(node)?;
+                out.extra.extend(extra);
+                out.extra.extend(value);
             }
             WP_INLINE | WP_ANCHOR => {
                 self.drawing(node)?;
-                Read::default()
             }
             V_IMAGEDATA => {
                 if let Some(id) = tree.attr(node, "r:id").filter(|id| !id.is_empty()) {
                     self.embedded_image(id)?;
                 }
-                Read::default()
             }
             // Everything else, including the elements mammoth ignores by name.
-            _ => Read::default(),
-        })
+            _ => {}
+        }
+        Ok(())
     }
 
     fn target(&self, id: &str) -> Option<&'a str> {
