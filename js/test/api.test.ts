@@ -127,3 +127,14 @@ test("the module imports nothing and caps its memory", async () => {
   const memory = new WebAssembly.Instance(module, {}).exports.memory as WebAssembly.Memory;
   assert.throws(() => memory.grow(65536 - memory.buffer.byteLength / 65536 + 1));
 });
+
+test("reads in a row, across an instance dropped for its size, match reads alone", async () => {
+  // About 80 MB of text grows the shared instance past what it keeps.
+  const large = docx(`<w:p><w:r><w:t>${"x".repeat(80_000_000)}</w:t></w:r></w:p>`);
+  const small = fixture("tables.docx");
+  const want = (await mammoth.extractRawText({ buffer: small })).value;
+  assert.equal(extractRawTextSync({ buffer: small }).value, want);
+  assert.equal(extractRawTextSync({ buffer: large }).value.length, 80_000_002);
+  assert.throws(() => extractRawTextSync({ buffer: new Uint8Array(10) }), Error);
+  assert.equal(extractRawTextSync({ buffer: small }).value, want);
+});
