@@ -170,31 +170,33 @@ pub fn decode(bytes: Vec<u8>) -> String {
         }
     }
     // \r, U+0085 (C2 85) and U+2028 (E2 80 A8) become \n, \r\n and \r\u{85} one \n.
-    // Their lead bytes, found with memchr; everything between is copied as is.
-    let bytes = text.as_bytes();
-    let mut candidates = memchr::memchr3_iter(b'\r', 0xC2, 0xE2, bytes);
-    let Some(first) = candidates.find(|&at| line_break(bytes, at).is_some()) else {
+    // Their lead bytes, found with memchr; in place, since the text only shrinks.
+    let Some(first) = memchr::memchr3_iter(b'\r', 0xC2, 0xE2, text.as_bytes())
+        .find(|&at| line_break(text.as_bytes(), at).is_some())
+    else {
         return text;
     };
-    let mut out = Vec::with_capacity(bytes.len());
-    out.extend_from_slice(&bytes[..first]);
-    let mut at = first;
-    while at < bytes.len() {
-        match line_break(bytes, at) {
+    let mut bytes = text.into_bytes();
+    let (mut read, mut write) = (first, first);
+    while read < bytes.len() {
+        match line_break(&bytes, read) {
             Some(len) => {
-                out.push(b'\n');
-                at += len;
+                bytes[write] = b'\n';
+                write += 1;
+                read += len;
             }
             None => {
-                let next = memchr::memchr3(b'\r', 0xC2, 0xE2, &bytes[at + 1..])
-                    .map_or(bytes.len(), |offset| at + 1 + offset);
-                out.extend_from_slice(&bytes[at..next]);
-                at = next;
+                let next = memchr::memchr3(b'\r', 0xC2, 0xE2, &bytes[read + 1..])
+                    .map_or(bytes.len(), |offset| read + 1 + offset);
+                bytes.copy_within(read..next, write);
+                write += next - read;
+                read = next;
             }
         }
     }
-    // SAFETY: whole UTF-8 sequences were replaced by "\n"; the rest copied verbatim.
-    unsafe { String::from_utf8_unchecked(out) }
+    bytes.truncate(write);
+    // SAFETY: whole UTF-8 sequences were replaced by "\n"; the rest moved verbatim.
+    unsafe { String::from_utf8_unchecked(bytes) }
 }
 
 /// `lastIndexOf('</name>')` for every name, from one backward scan shared by all of
