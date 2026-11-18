@@ -64,6 +64,32 @@ test("declaredXmlBytes sees a deflate bomb in a few KiB", () => {
   assert.equal(declaredXmlBytes(new Uint8Array(10)), 0);
 });
 
+test("declaredXmlBytes counts a main part not named .xml", async () => {
+  // A read follows the officeDocument relationship to any target.
+  const document = strToU8(
+    `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${"x".repeat(2_000_000)}</w:t></w:r></w:p></w:body></w:document>`
+  );
+  const bytes = zipSync({
+    "_rels/.rels": strToU8(
+      '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.dat"/></Relationships>'
+    ),
+    "word/document.dat": document,
+  });
+  const want = await mammoth.extractRawText({ buffer: Buffer.from(bytes) });
+  assert.equal(extractRawTextSync({ buffer: bytes }).value, want.value);
+  assert.ok(declaredXmlBytes(bytes) >= document.length);
+
+  // Relationship parts past 16 KiB are not parsed by the size probe: every part
+  // counts instead.
+  const padded = zipSync({
+    "_rels/.rels": strToU8(
+      `<?xml version="1.0"?><!--${" ".repeat(20_000)}--><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.dat"/></Relationships>`
+    ),
+    "word/document.dat": document,
+  });
+  assert.ok(declaredXmlBytes(padded) >= document.length + 20_000);
+});
+
 test("a part never inflates past its declared size", async () => {
   const bytes = docx(`<w:p><w:r><w:t>${"x".repeat(1_000_000)}</w:t></w:r></w:p>`);
   const view = new DataView(bytes.buffer);
@@ -110,4 +136,33 @@ test("the module imports nothing and caps its memory", async () => {
   assert.deepEqual(WebAssembly.Module.imports(module), []);
   const memory = new WebAssembly.Instance(module, {}).exports.memory as WebAssembly.Memory;
   assert.throws(() => memory.grow(65536 - memory.buffer.byteLength / 65536 + 1));
+});
+
+test("reads in a row, across an instance dropped for its size, match reads alone", async () => {
+  // About 80 MB of text grows the shared instance past what it keeps.
+  const large = docx(`<w:p><w:r><w:t>${"x".repeat(80_000_000)}</w:t></w:r></w:p>`);
+  const small = fixture("tables.docx");
+  const want = (await mammoth.extractRawText({ buffer: small })).value;
+  assert.equal(extractRawTextSync({ buffer: small }).value, want);
+  assert.equal(extractRawTextSync({ buffer: large }).value.length, 80_000_002);
+  assert.throws(() => extractRawTextSync({ buffer: new Uint8Array(10) }), Error);
+  assert.equal(extractRawTextSync({ buffer: small }).value, want);
+});
+
+test("every dingbat reads as mammoth reads it", async () => {
+  const fonts = ["Symbol", "Webdings", "Wingdings", "wingdings 2", "WINGDINGS 3", "Arial"];
+  const chars = [];
+  for (let code = 0; code < 256; code++) {
+    const hex = code.toString(16).toUpperCase().padStart(2, "0");
+    chars.push(hex, `F0${hex}`);
+  }
+  chars.push("", "-1", "100", "F100", "1e2", " 41", "0x41", "zz", "41.5");
+  const body = fonts
+    .map((font) =>
+      chars.map((char) => `<w:p><w:r><w:sym w:font="${font}" w:char="${char}"/></w:r></w:p>`).join("")
+    )
+    .join("");
+  const bytes = docx(body);
+  const want = await mammoth.extractRawText({ buffer: Buffer.from(bytes) });
+  assert.equal(extractRawTextSync({ buffer: bytes }).value, want.value);
 });

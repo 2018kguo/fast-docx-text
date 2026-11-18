@@ -3,9 +3,9 @@
 // workers and edge runtimes.
 //
 // Every call is synchronous CPU work on the thread that makes it (extractRawText only
-// wraps it in a promise). Each runs in a fresh instance of the compiled module, so the
-// memory one large document needed is released afterwards and a failed call leaves
-// nothing behind.
+// wraps it in a promise). Calls share one instance of the compiled module while its
+// memory stays under KEEP_BYTES; a call that grows it past that (a large document) or
+// traps drops it, and the next call starts a fresh one.
 
 import { WASM_BASE64 } from "../wasm/fast_docx_text.wasm.js";
 
@@ -59,12 +59,20 @@ function instance(): Exports {
   return exports as unknown as Exports;
 }
 
-/** Copies `bytes` into a fresh instance and returns it with the input's address. */
-function load(bytes: Uint8Array): [Exports, number] {
-  const wasm = instance();
+/** Memory an instance keeps between calls; WebAssembly memory never shrinks. */
+const KEEP_BYTES = 64 * 1024 * 1024;
+let idle: Exports | null = null;
+
+/** Copies `bytes` into an instance and runs `call` with the input's address. */
+function run<T>(bytes: Uint8Array, call: (wasm: Exports, pointer: number) => T): T {
+  const wasm = idle ?? instance();
+  // Unset while the call runs, so a trap leaves no half-used instance behind.
+  idle = null;
   const pointer = wasm.alloc(bytes.byteLength);
   new Uint8Array(wasm.memory.buffer, pointer, bytes.byteLength).set(bytes);
-  return [wasm, pointer];
+  const result = call(wasm, pointer);
+  if (wasm.memory.buffer.byteLength <= KEEP_BYTES) idle = wasm;
+  return result;
 }
 
 const utf8 = new TextDecoder();
@@ -78,11 +86,13 @@ function bytesOf(input: Input): Uint8Array {
 /** The text of a .docx, synchronously. Throws an Error with mammoth's message. */
 export function extractRawTextSync(input: Input): Result {
   const bytes = bytesOf(input);
-  const [wasm, pointer] = load(bytes);
-  const status = wasm.extract(pointer, bytes.byteLength);
-  const output = utf8.decode(
-    new Uint8Array(wasm.memory.buffer, wasm.output_ptr(), wasm.output_len())
-  );
+  const [status, output] = run(bytes, (wasm, pointer) => {
+    const status = wasm.extract(pointer, bytes.byteLength);
+    const output = utf8.decode(
+      new Uint8Array(wasm.memory.buffer, wasm.output_ptr(), wasm.output_len())
+    );
+    return [status, output] as const;
+  });
   if (status !== 0) throw new Error(output);
   return { value: output, messages: [] };
 }
@@ -97,14 +107,14 @@ export async function extractRawText(input: Input): Promise<Result> {
 }
 
 /**
- * What the archive declares its .xml and .rels parts inflate to, together: an upper
- * bound on the XML a read parses, since no part inflates past its declared size.
- * Reads the zip directory only, so it is cheap; use it to decide whether a file is
- * worth sending to a worker thread. 0 when the archive cannot be opened.
+ * What the archive declares the parts a read may parse inflate to, together: an
+ * upper bound on the XML a read parses, since no part inflates past its declared
+ * size. Reads the zip directory and the relationship parts only, so it is cheap; use
+ * it to decide whether a file is worth sending to a worker thread. 0 when the archive
+ * cannot be opened.
  */
 export function declaredXmlBytes(bytes: Uint8Array): number {
-  const [wasm, pointer] = load(bytes);
-  const size = wasm.declared_xml_bytes(pointer, bytes.byteLength);
+  const size = run(bytes, (wasm, pointer) => wasm.declared_xml_bytes(pointer, bytes.byteLength));
   // The u32 comes back as a signed i32.
   return size < 0 ? size + 2 ** 32 : size;
 }

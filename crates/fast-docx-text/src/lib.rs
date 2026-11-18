@@ -9,8 +9,8 @@
 //! never past the size the archive declares for it, XML nests at most
 //! [`xmldom::MAX_DEPTH`] levels, and every failure is an `Err`, never a panic.
 
-pub mod raw_text;
 mod dingbats;
+pub mod raw_text;
 pub mod tree;
 pub mod xmldom;
 pub mod zip;
@@ -21,21 +21,41 @@ pub fn extract_raw_text(data: &[u8]) -> Result<String, String> {
     raw_text::extract(data)
 }
 
-/// What the archive declares its `.xml` and `.rels` parts inflate to, together: an
-/// upper bound on the XML a read parses (saturating; 0 when the archive cannot be
-/// opened, which a read reports at once). Reads the zip directory only.
+/// What the archive declares the parts a read may parse inflate to, together: every
+/// `.xml` and `.rels` part, and every part reached through relationships whatever its
+/// name (the main document may be `word/document.dat`). An upper bound on the XML a
+/// read parses (saturating; 0 when the archive cannot be opened, which a read reports
+/// at once). Reads the zip directory and the package's relationship parts only.
 pub fn declared_xml_bytes(data: &[u8]) -> u64 {
     let Ok(package) = zip::open(data) else {
         return 0;
     };
-    package
+    let named_xml = |name: &str| {
+        let name = name.to_lowercase();
+        name.ends_with(".xml") || name.ends_with(".rels")
+    };
+    let declared = package
         .entries
         .iter()
-        .filter(|entry| {
-            let name = entry.name.to_lowercase();
-            !entry.dir && (name.ends_with(".xml") || name.ends_with(".rels"))
+        .filter(|entry| !entry.dir && named_xml(&entry.name))
+        .fold(0u64, |sum, entry| sum.saturating_add(entry.declared_size()));
+    // Relationships are parsed only from parts of at most 16 KiB, so this stays cheap
+    // on the caller's thread; past that, every part counts.
+    let Some(mut related) = raw_text::related_parts(&package, 16 * 1024) else {
+        return package
+            .entries
+            .iter()
+            .fold(0u64, |sum, entry| sum.saturating_add(entry.declared_size()));
+    };
+    related.retain(|path| !named_xml(path));
+    related.sort();
+    related.dedup();
+    related
+        .iter()
+        .filter_map(|path| package.file(path))
+        .fold(declared, |sum, entry| {
+            sum.saturating_add(entry.declared_size())
         })
-        .fold(0u64, |sum, entry| sum.saturating_add(entry.declared_size()))
 }
 
 /// The WebAssembly interface, a plain C ABI with no imports: JavaScript copies the file

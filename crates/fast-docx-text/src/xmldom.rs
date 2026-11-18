@@ -85,9 +85,9 @@ fn char_reference(digits: &str, out: &mut String) {
     let code = if valid.is_empty() {
         0.0 // NaN, which fromCharCode reads as 0
     } else {
-        valid
-            .chars()
-            .fold(0f64, |acc, c| acc * f64::from(radix) + f64::from(c.to_digit(radix).unwrap()))
+        valid.chars().fold(0f64, |acc, c| {
+            acc * f64::from(radix) + f64::from(c.to_digit(radix).unwrap())
+        })
     };
     let units: Vec<u16> = if code > 65535.0 {
         // (code - 0x10000) >> 10 and & 0x3ff, as int32.
@@ -127,7 +127,8 @@ fn decode_entities(raw: &str, out: &mut String) -> Result<(), String> {
             cursor += 1;
         }
         let word_start = cursor;
-        while cursor < bytes.len() && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
+        while cursor < bytes.len()
+            && (bytes[cursor].is_ascii_alphanumeric() || bytes[cursor] == b'_')
         {
             cursor += 1;
         }
@@ -169,26 +170,160 @@ pub fn decode(bytes: Vec<u8>) -> String {
             text.drain(..'\u{FEFF}'.len_utf8());
         }
     }
-    let needs_normalizing = memchr::memchr(b'\r', text.as_bytes()).is_some()
-        || text.contains(['\u{85}', '\u{2028}']);
-    if !needs_normalizing {
+    // \r, U+0085 (C2 85) and U+2028 (E2 80 A8) become \n, \r\n and \r\u{85} one \n.
+    // Their lead bytes, found with memchr; in place, since the text only shrinks.
+    let Some(first) = memchr::memchr3_iter(b'\r', 0xC2, 0xE2, text.as_bytes())
+        .find(|&at| line_break(text.as_bytes(), at).is_some())
+    else {
         return text;
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '\r' => {
-                if matches!(chars.peek(), Some('\n' | '\u{85}')) {
-                    chars.next();
-                }
-                out.push('\n');
+    };
+    let mut bytes = text.into_bytes();
+    let (mut read, mut write) = (first, first);
+    while read < bytes.len() {
+        match line_break(&bytes, read) {
+            Some(len) => {
+                bytes[write] = b'\n';
+                write += 1;
+                read += len;
             }
-            '\u{85}' | '\u{2028}' => out.push('\n'),
-            _ => out.push(c),
+            None => {
+                let next = memchr::memchr3(b'\r', 0xC2, 0xE2, &bytes[read + 1..])
+                    .map_or(bytes.len(), |offset| read + 1 + offset);
+                bytes.copy_within(read..next, write);
+                write += next - read;
+                read = next;
+            }
         }
     }
-    out
+    bytes.truncate(write);
+    // SAFETY: whole UTF-8 sequences were replaced by "\n"; the rest moved verbatim.
+    unsafe { String::from_utf8_unchecked(bytes) }
+}
+
+/// xmldom's `lastIndexOf('</name>')` and `lastIndexOf('</name')` for every name. The
+/// first comes from one backward scan shared by all names: each lookup resumes it
+/// where the last stopped, remembering every end tag it passes. The second, needed
+/// only for end tags like `</name >` (or none), from an index of everything that
+/// follows a `</`, built once. Either way the source is read a bounded number of times.
+struct EndTags<'a> {
+    bytes: &'a [u8],
+    /// Every `</` at or past this offset has been seen.
+    scanned_to: usize,
+    last: FxMap<&'a [u8], usize>,
+    prefixes: Option<Prefixes<'a>>,
+}
+
+/// What follows each `</`, up to the next `<` or `>` (a name contains neither, so
+/// `</name` occurs there exactly when this starts with `name`), sorted and deduplicated
+/// so the ones starting with a name are a run, with a max-tree over their last offsets.
+struct Prefixes<'a> {
+    keys: Vec<&'a [u8]>,
+    /// Leaves at `keys.len()..`; each inner node the larger of its two children.
+    max: Vec<u32>,
+}
+
+impl<'a> EndTags<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        EndTags {
+            bytes,
+            scanned_to: bytes.len(),
+            last: FxMap::default(),
+            prefixes: None,
+        }
+    }
+
+    /// `lastIndexOf('</name>')`.
+    fn last(&mut self, name: &[u8]) -> Option<usize> {
+        if let Some(&at) = self.last.get(name) {
+            return Some(at);
+        }
+        while let Some(at) = memchr::memmem::rfind(&self.bytes[..self.scanned_to], b"</") {
+            self.scanned_to = at;
+            // A name never contains `<`, so the look for its `>` stops at the next `<`
+            // and the scans together stay linear.
+            let rest = &self.bytes[at + 2..];
+            if let Some(len) = memchr::memchr2(b'>', b'<', rest) {
+                if rest[len] == b'>' {
+                    let found = &rest[..len];
+                    self.last.entry(found).or_insert(at);
+                    if found == name {
+                        return Some(at);
+                    }
+                }
+            }
+        }
+        // Nothing before here, so later lookups need not search it again.
+        self.scanned_to = 0;
+        None
+    }
+
+    /// `lastIndexOf('</' + name)`.
+    fn last_prefixed(&mut self, name: &[u8]) -> Option<usize> {
+        let bytes = self.bytes;
+        let Prefixes { keys, max } = self.prefixes.get_or_insert_with(|| {
+            let mut entries: Vec<(&[u8], u32)> = memchr::memmem::find_iter(bytes, b"</")
+                .map(|at| {
+                    let rest = &bytes[at + 2..];
+                    let len = memchr::memchr2(b'<', b'>', rest).unwrap_or(rest.len());
+                    (&rest[..len], at as u32)
+                })
+                .collect();
+            entries.sort_unstable();
+            // Sorted by offset within a key, so the last of each run is its last offset.
+            entries.dedup_by(|later, earlier| {
+                let same = later.0 == earlier.0;
+                if same {
+                    earlier.1 = later.1;
+                }
+                same
+            });
+            let n = entries.len();
+            let mut max = vec![0u32; 2 * n];
+            for (i, &(_, at)) in entries.iter().enumerate() {
+                max[n + i] = at;
+            }
+            for i in (1..n).rev() {
+                max[i] = max[2 * i].max(max[2 * i + 1]);
+            }
+            Prefixes {
+                keys: entries.into_iter().map(|(key, _)| key).collect(),
+                max,
+            }
+        });
+        let start = keys.partition_point(|key| *key < name);
+        let end = start + keys[start..].partition_point(|key| key.starts_with(name));
+        if start == end {
+            return None;
+        }
+        // The largest leaf in [start, end), bottom-up.
+        let n = keys.len();
+        let (mut lo, mut hi, mut best) = (start + n, end + n, 0);
+        while lo < hi {
+            if lo & 1 == 1 {
+                best = best.max(max[lo]);
+                lo += 1;
+            }
+            if hi & 1 == 1 {
+                hi -= 1;
+                best = best.max(max[hi]);
+            }
+            lo /= 2;
+            hi /= 2;
+        }
+        Some(best as usize)
+    }
+}
+
+/// The byte length of the line break starting at `at`, if one does.
+fn line_break(bytes: &[u8], at: usize) -> Option<usize> {
+    match bytes[at..] {
+        [b'\r', b'\n', ..] => Some(2),
+        [b'\r', 0xC2, 0x85, ..] => Some(3),
+        [b'\r', ..] => Some(1),
+        [0xC2, 0x85, ..] => Some(2),
+        [0xE2, 0x80, 0xA8, ..] => Some(3),
+        _ => None,
+    }
 }
 
 struct Scope {
@@ -252,6 +387,7 @@ pub fn parse(source: String, known: &[&str]) -> Result<Tree, String> {
     // Per open element: (raw tag name, scope length before it).
     let mut open: Vec<(&str, usize)> = Vec::new();
     let mut element_names: FxMap<&str, ElementName> = FxMap::default();
+    let mut end_tags = EndTags::new(bytes);
     // Raw attribute name → (converted id, scope generation).
     let mut attribute_names: FxMap<&str, (u32, u32)> = FxMap::default();
     let mut start = 0;
@@ -273,7 +409,9 @@ pub fn parse(source: String, known: &[&str]) -> Result<Tree, String> {
                 };
                 let raw = &source[tag_start + 2..end];
                 let name = raw.trim_end_matches([' ', '\t', '\n', '\r']);
-                if name.bytes().any(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+                if name
+                    .bytes()
+                    .any(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
                     || (!name.is_ascii() && name.contains(char::is_whitespace))
                 {
                     return Err(format!("end tag name: {name} is malformed"));
@@ -442,13 +580,13 @@ pub fn parse(source: String, known: &[&str]) -> Result<Tree, String> {
                     // before the element's end; an element whose end is past it has no
                     // end tag after it.
                     let position = *entry.close.get_or_insert_with(|| {
-                        let last = |needle: String| {
-                            memchr::memmem::rfind(bytes, needle.as_bytes())
-                                .map_or(-1, |at| at as i64)
-                        };
-                        let full = last(format!("</{tag_name}>"));
+                        let full = end_tags
+                            .last(tag_name.as_bytes())
+                            .map_or(-1, |at| at as i64);
                         if full < tag_end as i64 {
-                            last(format!("</{tag_name}"))
+                            end_tags
+                                .last_prefixed(tag_name.as_bytes())
+                                .map_or(-1, |at| at as i64)
                         } else {
                             full
                         }
@@ -502,7 +640,9 @@ pub fn parse(source: String, known: &[&str]) -> Result<Tree, String> {
                     scope.truncate(scope_len);
                 } else {
                     if open.len() >= MAX_DEPTH {
-                        return Err(format!("XML nesting exceeds the {MAX_DEPTH}-level depth cap"));
+                        return Err(format!(
+                            "XML nesting exceeds the {MAX_DEPTH}-level depth cap"
+                        ));
                     }
                     open.push((tag_name, scope_len));
                 }
@@ -568,7 +708,10 @@ fn doctype_end(b: &[u8], tag_start: usize) -> Result<Option<usize>, String> {
         first.get_or_insert((p, token_end));
         p = token_end;
     }
-    Err("element parse error: TypeError: Cannot read properties of undefined (reading 'length')".into())
+    Err(
+        "element parse error: TypeError: Cannot read properties of undefined (reading 'length')"
+            .into(),
+    )
 }
 
 fn doctype(b: &[u8], first: Option<(usize, usize)>, tokens: usize, end: usize) -> Option<usize> {
@@ -636,5 +779,79 @@ mod tests {
     fn refuses_unknown_entity_and_unclosed() {
         assert!(parse("<a>&nbsp;</a>".into(), &[]).is_err());
         assert!(parse("<a><b></a>".into(), &[]).is_err());
+    }
+
+    /// xmldom's line-break normalization, char by char: what `decode` must match.
+    fn reference(text: &str) -> String {
+        let mut out = String::new();
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\r' => {
+                    if matches!(chars.peek(), Some('\n' | '\u{85}')) {
+                        chars.next();
+                    }
+                    out.push('\n');
+                }
+                '\u{85}' | '\u{2028}' => out.push('\n'),
+                _ => out.push(c),
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn end_tags_match_last_index_of() {
+        let pieces = ["</", "<", ">", "a", "b", "a:b", " ", "/"];
+        let mut seed = 7u64;
+        for _ in 0..20_000 {
+            let mut text = String::new();
+            for _ in 0..(seed % 13) {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                text.push_str(pieces[(seed >> 33) as usize % pieces.len()]);
+            }
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let bytes = text.as_bytes();
+            let mut end_tags = EndTags::new(bytes);
+            for name in ["b", "a", "a:b", "ab", ""] {
+                let expected = memchr::memmem::rfind(bytes, format!("</{name}>").as_bytes());
+                assert_eq!(end_tags.last(name.as_bytes()), expected, "{text:?} {name}");
+                let expected = memchr::memmem::rfind(bytes, format!("</{name}").as_bytes());
+                assert_eq!(
+                    end_tags.last_prefixed(name.as_bytes()),
+                    expected,
+                    "{text:?} {name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn decode_normalizes_line_breaks_like_xmldom() {
+        let pieces = [
+            "\r", "\n", "\u{85}", "\u{2028}", "\u{2029}", "\u{c2}", "\u{20ac}", "a",
+        ];
+        let mut seed = 1u64;
+        for _ in 0..20_000 {
+            let mut text = String::new();
+            for _ in 0..(seed % 9) {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                text.push_str(pieces[(seed >> 33) as usize % pieces.len()]);
+            }
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            assert_eq!(
+                super::decode(text.clone().into_bytes()),
+                reference(&text),
+                "{text:?}"
+            );
+        }
     }
 }

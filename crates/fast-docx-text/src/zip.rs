@@ -9,8 +9,7 @@
 
 use std::collections::HashMap;
 
-use miniz_oxide::inflate::TINFLStatus;
-use miniz_oxide::inflate::core::{DecompressorOxide, decompress, inflate_flags};
+use zlib_rs::{InflateConfig, ReturnCode};
 
 /// The most a single part may inflate to. A 2,200-page document.xml is about 19 MB.
 pub const MAX_PART_BYTES: usize = 128 * 1024 * 1024;
@@ -116,16 +115,15 @@ impl Entry<'_> {
 /// produce more than declared stops there and fails the length check.
 fn inflate(data: &[u8], size: usize) -> Result<Vec<u8>, Error> {
     let mut out = vec![0u8; size + 1];
-    let mut decompressor = DecompressorOxide::new();
-    let flags = inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
-    let (status, _, written) = decompress(&mut decompressor, data, &mut out, 0, flags);
-    match status {
-        TINFLStatus::Done => {}
+    // Negative window bits: raw DEFLATE, no zlib header.
+    let config = InflateConfig { window_bits: -15 };
+    let (written, code) = zlib_rs::decompress_slice(&mut out, data, config);
+    let written = written.len();
+    match code {
+        ReturnCode::Ok => {}
         // More output than declared: the length check reports it.
-        TINFLStatus::HasMoreOutput => {}
-        TINFLStatus::NeedsMoreInput | TINFLStatus::FailedCannotMakeProgress => {
-            return Err("invalid deflate data: unexpected end of stream".into());
-        }
+        ReturnCode::BufError => {}
+        // Truncated or malformed.
         _ => return Err("invalid deflate data".into()),
     }
     out.truncate(written);
@@ -147,7 +145,6 @@ impl<'a> Package<'a> {
             .map(|&index| &self.entries[index])
             .filter(|entry| !entry.dir)
     }
-
 }
 
 /// JSZip's `utils.resolve`: drops `.` and inner empty segments, and `..` pops one.
@@ -238,7 +235,9 @@ pub fn open(data: &[u8]) -> Result<Package<'_>, Error> {
 
     let mut expected_end = directory_offset.saturating_add(directory_size);
     if zip64 {
-        expected_end = expected_end.saturating_add(32).saturating_add(zip64_end_size);
+        expected_end = expected_end
+            .saturating_add(32)
+            .saturating_add(zip64_end_size);
     }
     let end_offset = end_offset as u64;
     if end_offset > expected_end {
@@ -348,8 +347,8 @@ pub fn open(data: &[u8]) -> Result<Package<'_>, Error> {
                 String::from_utf8_lossy(local_name)
             ));
         }
-        let data = reader
-            .read(usize::try_from(file.compressed_size).map_err(|_| "Corrupted zip")?)?;
+        let data =
+            reader.read(usize::try_from(file.compressed_size).map_err(|_| "Corrupted zip")?)?;
         let utf8 = file.flag & 0x0800 != 0;
         let name = if utf8 {
             String::from_utf8_lossy(local_name).into_owned()
