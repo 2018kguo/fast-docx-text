@@ -49,7 +49,7 @@ plugin. It needs no Rust and runs no install scripts.
 
 **A read is synchronous CPU work** on the thread that makes it. On a server, read long
 documents on a worker thread. `declaredXmlBytes(bytes)` reads only the zip directory and
-returns an upper bound on the XML a read will parse, so it is a cheap way to decide:
+relationship parts and returns an upper bound on the XML a read will parse, so it is a cheap way to decide:
 
 ```js
 // docx-thread.js

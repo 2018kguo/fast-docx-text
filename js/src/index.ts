@@ -99,7 +99,7 @@ export async function extractRawText(input: Input): Promise<Result> {
 /**
  * What the archive declares its .xml and .rels parts inflate to, together: an upper
  * bound on the XML a read parses, since no part inflates past its declared size.
- * Reads the zip directory only, so it is cheap; use it to decide whether a file is
+ * Reads the zip directory and the relationship parts only, so it is cheap; use it to decide whether a file is
  * worth sending to a worker thread. 0 when the archive cannot be opened.
  */
 export function declaredXmlBytes(bytes: Uint8Array): number {

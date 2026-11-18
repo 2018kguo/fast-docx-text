@@ -398,6 +398,41 @@ fn read_numbering(numbering: Option<&Part>, styles: Option<&Part>) -> Result<Num
     Ok(result)
 }
 
+/// The parts [`extract`] finds through relationships, which need not be named .xml:
+/// the main document and its styles, numbering, notes and comments, resolved as
+/// `extract` resolves them. Relationship parts larger than `max_rels` are not read
+/// (the caller has already counted them).
+pub fn related_parts(package: &zip::Package, max_rels: u64) -> Vec<String> {
+    let relationships = |path: &str| {
+        let small = package.file(path).is_some_and(|entry| entry.declared_size() <= max_rels);
+        let part = if small { read_part(package, path).ok().flatten() } else { None };
+        read_relationships(part.as_ref())
+    };
+    let main = find_part_path(
+        package,
+        &relationships("_rels/.rels"),
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument",
+        "",
+        "word/document.xml",
+    );
+    let document_relationships = relationships(&relationships_path(&main));
+    let (main_dir, _) = split_path(&main);
+    let mut parts: Vec<String> = ["styles", "numbering", "footnotes", "endnotes", "comments"]
+        .iter()
+        .map(|name| {
+            find_part_path(
+                package,
+                &document_relationships,
+                &format!("http://schemas.openxmlformats.org/officeDocument/2006/relationships/{name}"),
+                main_dir,
+                &format!("word/{name}.xml"),
+            )
+        })
+        .collect();
+    parts.push(main);
+    parts
+}
+
 pub fn extract(data: &[u8]) -> Result<String, String> {
     let package = zip::open(data)?;
     read_part(&package, "[Content_Types].xml")?;

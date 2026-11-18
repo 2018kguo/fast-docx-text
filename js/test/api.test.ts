@@ -64,6 +64,22 @@ test("declaredXmlBytes sees a deflate bomb in a few KiB", () => {
   assert.equal(declaredXmlBytes(new Uint8Array(10)), 0);
 });
 
+test("declaredXmlBytes counts a main part not named .xml", async () => {
+  // A read follows the officeDocument relationship to any target.
+  const document = strToU8(
+    `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${"x".repeat(2_000_000)}</w:t></w:r></w:p></w:body></w:document>`
+  );
+  const bytes = zipSync({
+    "_rels/.rels": strToU8(
+      '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.dat"/></Relationships>'
+    ),
+    "word/document.dat": document,
+  });
+  const want = await mammoth.extractRawText({ buffer: Buffer.from(bytes) });
+  assert.equal(extractRawTextSync({ buffer: bytes }).value, want.value);
+  assert.ok(declaredXmlBytes(bytes) >= document.length);
+});
+
 test("a part never inflates past its declared size", async () => {
   const bytes = docx(`<w:p><w:r><w:t>${"x".repeat(1_000_000)}</w:t></w:r></w:p>`);
   const view = new DataView(bytes.buffer);
